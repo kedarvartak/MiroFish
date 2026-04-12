@@ -12,11 +12,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from queue import Queue, Empty
 
-from zep_cloud.client import Zep
+try:
+    from zep_cloud.client import Zep
+except Exception:
+    Zep = None
 
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.locale import get_locale, set_locale
+from .local_graph_store import LocalGraphStore
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
 
@@ -238,12 +242,10 @@ class ZepGraphMemoryUpdater:
             api_key: Zep API Key（可选，默认从配置读取）
         """
         self.graph_id = graph_id
-        self.api_key = api_key or Config.ZEP_API_KEY
-        
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY未配置")
-        
-        self.client = Zep(api_key=self.api_key)
+        self.api_key = Config.resolve_zep_api_key(api_key)
+        self.use_zep = bool(self.api_key and Zep)
+        self.client = Zep(api_key=self.api_key) if self.use_zep else None
+        self.local_store = LocalGraphStore()
         
         # 活动队列
         self._activity_queue: Queue = Queue()
@@ -411,25 +413,29 @@ class ZepGraphMemoryUpdater:
         # 带重试的发送
         for attempt in range(self.MAX_RETRIES):
             try:
-                self.client.graph.add(
-                    graph_id=self.graph_id,
-                    type="text",
-                    data=combined_text
-                )
-                
+                if self.use_zep:
+                    self.client.graph.add(
+                        graph_id=self.graph_id,
+                        type="text",
+                        data=combined_text
+                    )
+                else:
+                    self.local_store.add_text(self.graph_id, combined_text)
+
                 self._total_sent += 1
                 self._total_items_sent += len(activities)
                 display_name = self._get_platform_display_name(platform)
-                logger.info(f"成功批量发送 {len(activities)} 条{display_name}活动到图谱 {self.graph_id}")
+                backend = "Zep" if self.use_zep else "本地"
+                logger.info(f"成功批量发送 {len(activities)} 条{display_name}活动到{backend}图谱 {self.graph_id}")
                 logger.debug(f"批量内容预览: {combined_text[:200]}...")
                 return
-                
+
             except Exception as e:
                 if attempt < self.MAX_RETRIES - 1:
-                    logger.warning(f"批量发送到Zep失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}")
+                    logger.warning(f"批量发送图谱失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}")
                     time.sleep(self.RETRY_DELAY * (attempt + 1))
                 else:
-                    logger.error(f"批量发送到Zep失败，已重试{self.MAX_RETRIES}次: {e}")
+                    logger.error(f"批量发送图谱失败，已重试{self.MAX_RETRIES}次: {e}")
                     self._failed_count += 1
     
     def _flush_remaining(self):

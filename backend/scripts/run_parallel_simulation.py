@@ -91,6 +91,7 @@ sys.path.insert(0, _backend_dir)
 
 # 加载项目根目录的 .env 文件（包含 LLM_API_KEY 等配置）
 from dotenv import load_dotenv
+from app.config import Config
 _env_file = os.path.join(_project_root, '.env')
 if os.path.exists(_env_file):
     load_dotenv(_env_file)
@@ -1020,12 +1021,16 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
         llm_model = config.get("llm_model", "gpt-4o-mini")
     
     # 设置 camel-ai 所需的环境变量
-    if llm_api_key:
-        os.environ["OPENAI_API_KEY"] = llm_api_key
-    
+    resolved_api_key = Config.resolve_llm_api_key(
+        api_key=llm_api_key,
+        base_url=llm_base_url
+    )
+    if resolved_api_key:
+        os.environ["OPENAI_API_KEY"] = resolved_api_key
+
     if not os.environ.get("OPENAI_API_KEY"):
-        raise ValueError("缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY")
-    
+        raise ValueError("缺少 API Key 配置，请在项目根目录 .env 文件中设置 LLM_API_KEY；若使用本地模型，请设置 LLM_LOCAL_MODE=true")
+
     if llm_base_url:
         os.environ["OPENAI_API_BASE_URL"] = llm_base_url
     

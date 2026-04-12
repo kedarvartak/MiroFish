@@ -13,13 +13,19 @@ import json
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
-from zep_cloud.client import Zep
+try:
+    from zep_cloud.client import Zep
+    from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+except Exception:
+    Zep = None
+    fetch_all_nodes = None
+    fetch_all_edges = None
 
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from ..utils.locale import get_locale, t
-from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from .local_graph_store import LocalGraphStore
 
 logger = get_logger('mirofish.zep_tools')
 
@@ -423,14 +429,14 @@ class ZepToolsService:
     RETRY_DELAY = 2.0
     
     def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
-        self.api_key = api_key or Config.ZEP_API_KEY
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY 未配置")
-        
-        self.client = Zep(api_key=self.api_key)
+        self.api_key = Config.resolve_zep_api_key(api_key)
+        self.use_zep = bool(self.api_key and Zep)
+        self.client = Zep(api_key=self.api_key) if self.use_zep else None
+        self.local_store = LocalGraphStore()
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
-        logger.info(t("console.zepToolsInitialized"))
+        mode = "zep" if self.use_zep else "local"
+        logger.info(f"{t('console.zepToolsInitialized')} mode={mode}")
     
     @property
     def llm(self) -> LLMClient:
@@ -484,6 +490,9 @@ class ZepToolsService:
             SearchResult: 搜索结果
         """
         logger.info(t("console.graphSearch", graphId=graph_id, query=query[:50]))
+
+        if not self.use_zep:
+            return self._local_search(graph_id, query, limit, scope)
         
         # 尝试使用Zep Cloud Search API
         try:
@@ -659,18 +668,28 @@ class ZepToolsService:
         """
         logger.info(t("console.fetchingAllNodes", graphId=graph_id))
 
-        nodes = fetch_all_nodes(self.client, graph_id)
-
         result = []
-        for node in nodes:
-            node_uuid = getattr(node, 'uuid_', None) or getattr(node, 'uuid', None) or ""
-            result.append(NodeInfo(
-                uuid=str(node_uuid) if node_uuid else "",
-                name=node.name or "",
-                labels=node.labels or [],
-                summary=node.summary or "",
-                attributes=node.attributes or {}
-            ))
+        if self.use_zep:
+            nodes = fetch_all_nodes(self.client, graph_id)
+            for node in nodes:
+                node_uuid = getattr(node, 'uuid_', None) or getattr(node, 'uuid', None) or ""
+                result.append(NodeInfo(
+                    uuid=str(node_uuid) if node_uuid else "",
+                    name=node.name or "",
+                    labels=node.labels or [],
+                    summary=node.summary or "",
+                    attributes=node.attributes or {}
+                ))
+        else:
+            nodes = self.local_store.get_all_nodes(graph_id)
+            for node in nodes:
+                result.append(NodeInfo(
+                    uuid=node.get("uuid", ""),
+                    name=node.get("name", ""),
+                    labels=node.get("labels", []),
+                    summary=node.get("summary", ""),
+                    attributes=node.get("attributes", {})
+                ))
 
         logger.info(t("console.fetchedNodes", count=len(result)))
         return result
@@ -688,58 +707,83 @@ class ZepToolsService:
         """
         logger.info(t("console.fetchingAllEdges", graphId=graph_id))
 
-        edges = fetch_all_edges(self.client, graph_id)
-
         result = []
-        for edge in edges:
-            edge_uuid = getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', None) or ""
-            edge_info = EdgeInfo(
-                uuid=str(edge_uuid) if edge_uuid else "",
-                name=edge.name or "",
-                fact=edge.fact or "",
-                source_node_uuid=edge.source_node_uuid or "",
-                target_node_uuid=edge.target_node_uuid or ""
-            )
-
-            # 添加时间信息
-            if include_temporal:
-                edge_info.created_at = getattr(edge, 'created_at', None)
-                edge_info.valid_at = getattr(edge, 'valid_at', None)
-                edge_info.invalid_at = getattr(edge, 'invalid_at', None)
-                edge_info.expired_at = getattr(edge, 'expired_at', None)
-
-            result.append(edge_info)
+        if self.use_zep:
+            edges = fetch_all_edges(self.client, graph_id)
+            for edge in edges:
+                edge_uuid = getattr(edge, 'uuid_', None) or getattr(edge, 'uuid', None) or ""
+                edge_info = EdgeInfo(
+                    uuid=str(edge_uuid) if edge_uuid else "",
+                    name=edge.name or "",
+                    fact=edge.fact or "",
+                    source_node_uuid=edge.source_node_uuid or "",
+                    target_node_uuid=edge.target_node_uuid or ""
+                )
+                if include_temporal:
+                    edge_info.created_at = getattr(edge, 'created_at', None)
+                    edge_info.valid_at = getattr(edge, 'valid_at', None)
+                    edge_info.invalid_at = getattr(edge, 'invalid_at', None)
+                    edge_info.expired_at = getattr(edge, 'expired_at', None)
+                result.append(edge_info)
+        else:
+            edges = self.local_store.get_all_edges(graph_id)
+            for edge in edges:
+                edge_info = EdgeInfo(
+                    uuid=edge.get("uuid", ""),
+                    name=edge.get("name", ""),
+                    fact=edge.get("fact", ""),
+                    source_node_uuid=edge.get("source_node_uuid", ""),
+                    target_node_uuid=edge.get("target_node_uuid", ""),
+                    source_node_name=edge.get("source_node_name"),
+                    target_node_name=edge.get("target_node_name"),
+                )
+                if include_temporal:
+                    edge_info.created_at = edge.get("created_at")
+                    edge_info.valid_at = edge.get("valid_at")
+                    edge_info.invalid_at = edge.get("invalid_at")
+                    edge_info.expired_at = edge.get("expired_at")
+                result.append(edge_info)
 
         logger.info(t("console.fetchedEdges", count=len(result)))
         return result
-    
+
     def get_node_detail(self, node_uuid: str) -> Optional[NodeInfo]:
         """
         获取单个节点的详细信息
-        
+
         Args:
             node_uuid: 节点UUID
-            
+
         Returns:
             节点信息或None
         """
         logger.info(t("console.fetchingNodeDetail", uuid=node_uuid[:8]))
-        
+
         try:
-            node = self._call_with_retry(
-                func=lambda: self.client.graph.node.get(uuid_=node_uuid),
-                operation_name=t("console.fetchNodeDetailOp", uuid=node_uuid[:8])
-            )
-            
+            if self.use_zep:
+                node = self._call_with_retry(
+                    func=lambda: self.client.graph.node.get(uuid_=node_uuid),
+                    operation_name=t("console.fetchNodeDetailOp", uuid=node_uuid[:8])
+                )
+                if not node:
+                    return None
+                return NodeInfo(
+                    uuid=getattr(node, 'uuid_', None) or getattr(node, 'uuid', ''),
+                    name=node.name or "",
+                    labels=node.labels or [],
+                    summary=node.summary or "",
+                    attributes=node.attributes or {}
+                )
+
+            node = self.local_store.get_node_by_uuid(node_uuid)
             if not node:
                 return None
-            
             return NodeInfo(
-                uuid=getattr(node, 'uuid_', None) or getattr(node, 'uuid', ''),
-                name=node.name or "",
-                labels=node.labels or [],
-                summary=node.summary or "",
-                attributes=node.attributes or {}
+                uuid=node.get("uuid", ""),
+                name=node.get("name", ""),
+                labels=node.get("labels", []),
+                summary=node.get("summary", ""),
+                attributes=node.get("attributes", {})
             )
         except Exception as e:
             logger.error(t("console.fetchNodeDetailFailed", error=str(e)))

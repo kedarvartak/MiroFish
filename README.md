@@ -112,21 +112,30 @@ cp .env.example .env
 # Edit the .env file and fill in the required API keys
 ```
 
+
 **Required Environment Variables:**
 
 ```env
-# LLM API Configuration (supports any LLM API with OpenAI SDK format)
-# Recommended: Alibaba Qwen-plus model via Bailian Platform: https://bailian.console.aliyun.com/
-# High consumption, try simulations with fewer than 40 rounds first
+# Option A: Cloud provider (requires real API key)
+LLM_LOCAL_MODE=false
 LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL_NAME=qwen-plus
 
-# Zep Cloud Configuration
-# Free monthly quota is sufficient for simple usage: https://app.getzep.com/
-ZEP_API_KEY=your_zep_api_key
-```
+# Option B: Local/IDE-hosted OpenAI-compatible endpoint (no external key)
+# Example local URL: http://127.0.0.1:11434/v1
+# (or any MCP/IDE gateway that exposes an OpenAI-compatible /v1 API)
+LLM_LOCAL_MODE=true
+LLM_API_KEY=
+LLM_BASE_URL=http://127.0.0.1:11434/v1
+LLM_MODEL_NAME=your_local_model_name
 
+# Zep Cloud Configuration (optional)
+# If omitted, MiroFish will use built-in local graph memory storage
+# Set ZEP_REQUIRED=true only when you want to force Zep mode
+ZEP_API_KEY=your_zep_api_key
+ZEP_REQUIRED=false
+```
 #### 2. Install Dependencies
 
 ```bash

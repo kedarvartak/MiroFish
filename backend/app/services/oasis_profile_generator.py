@@ -189,17 +189,21 @@ class OasisProfileGenerator:
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model_name = model_name or Config.LLM_MODEL_NAME
-        
-        if not self.api_key:
-            raise ValueError("LLM_API_KEY 未配置")
-        
-        self.client = OpenAI(
+
+        resolved_api_key = Config.resolve_llm_api_key(
             api_key=self.api_key,
+            base_url=self.base_url
+        )
+        if not resolved_api_key:
+            raise ValueError("LLM_API_KEY 未配置")
+
+        self.client = OpenAI(
+            api_key=resolved_api_key,
             base_url=self.base_url
         )
         
         # Zep客户端用于检索丰富上下文
-        self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
+        self.zep_api_key = Config.resolve_zep_api_key(zep_api_key)
         self.zep_client = None
         self.graph_id = graph_id
         
