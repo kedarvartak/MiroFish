@@ -6,7 +6,7 @@ LLM客户端封装
 import json
 import re
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 
 from ..config import Config
 
@@ -88,20 +88,50 @@ class LLMClient:
         Returns:
             解析后的JSON对象
         """
-        response = self.chat(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"}
-        )
-        # 清理markdown代码块标记
+        try:
+            response = self.chat(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"}
+            )
+        except BadRequestError as e:
+            # 兼容部分本地 OpenAI 兼容后端（如 LM Studio 某些模型）：
+            # 可能不支持 json_object，仅支持 text/json_schema。
+            err_text = str(e)
+            if "response_format.type" not in err_text:
+                raise
+
+            fallback_messages = list(messages) + [{
+                "role": "user",
+                "content": "Return ONLY valid JSON object. No markdown fences. No extra text."
+            }]
+            response = self.chat(
+                messages=fallback_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=None
+            )
+
+        # 清理 markdown 代码块标记
         cleaned_response = response.strip()
         cleaned_response = re.sub(r'^```(?:json)?\s*\n?', '', cleaned_response, flags=re.IGNORECASE)
         cleaned_response = re.sub(r'\n?```\s*$', '', cleaned_response)
         cleaned_response = cleaned_response.strip()
 
+        # 优先直接解析
         try:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
-            raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
+            pass
 
+        # 兜底：从文本中提取首个 JSON 对象
+        match = re.search(r'\{[\s\S]*\}', cleaned_response)
+        if match:
+            candidate = match.group(0).strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+
+        raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
